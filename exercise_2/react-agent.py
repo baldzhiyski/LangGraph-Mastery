@@ -1,86 +1,133 @@
 from typing import Annotated, Sequence, TypedDict
-from dotenv import load_dotenv
-from langchain_core.messages import (
-    BaseMessage,
-    HumanMessage,
-    AIMessage,
-    ToolMessage,
-    SystemMessage,
-)
-from langchain_ollama import OllamaLLM
+from dotenv import load_dotenv  
+from langchain_core.messages import BaseMessage # Base class for all message types (human, AI, system, tool, etc.)
+from langchain_core.messages import ToolMessage # Special message returned when a tool finishes execution
+from langchain_core.messages import SystemMessage # Message for providing system-level instructions to the LLM
+from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
-from IPython.display import Image, display
 
-load_dotenv()
+load_dotenv()  # Load your environment variables (e.g., OPENAI_API_KEY)
 
-# 1. Define State
+# ---------------------------
+# 1. Define the STATE
+# ---------------------------
 class AgentState(TypedDict):
+    # The state holds a list of messages that accumulate during the run.
+    # Annotated[...] + add_messages ensures that new messages are automatically appended.
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
-# 2. LLM + Tools
-model = OllamaLLM(model="llama3:8b")
 
+# ---------------------------
+# 2. Define TOOLS
+# ---------------------------
 @tool
-def add(a: int, b: int):
-    """Add two numbers"""
-    return a + b
+def add(a: int, b:int):
+    """This is an addition function that adds 2 numbers together"""
+    return a + b 
 
 @tool
 def subtract(a: int, b: int):
-    """Subtract two numbers"""
+    """Subtraction function"""
     return a - b
 
 @tool
 def multiply(a: int, b: int):
-    """Multiply two numbers"""
+    """Multiplication function"""
     return a * b
 
+# Put all tools in a list
 tools = [add, subtract, multiply]
 
-# 3. Node that invokes LLM
-def model_call(state: AgentState) -> AgentState:
-    system_prompt = SystemMessage(content="You are my AI assistant. Use tools if needed.")
-    messages = [system_prompt] + state["messages"]
-    response = model.invoke(messages)
-    return {"messages": state["messages"] + [response]}
 
-# 4. Conditional logic
-def should_continue(state: AgentState) -> str:
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
+# ---------------------------
+# 3. LLM SETUP
+# ---------------------------
+# Create an OpenAI chat model and tell it which tools it may call
+model = ChatOpenAI(model="gpt-4o-mini").bind_tools(tools)
+
+
+# ---------------------------
+# 4. Agent NODE (LLM step)
+# ---------------------------
+def model_call(state:AgentState) -> AgentState:
+    # Add a system instruction to guide the LLM
+    system_prompt = SystemMessage(content=
+        "You are my AI assistant, please answer my query to the best of your ability."
+    )
+    # Call the LLM with [system_prompt] + current conversation
+    response = model.invoke([system_prompt] + state["messages"])
+    # Return a new state: the new AIMessage is appended to the list of messages
+    return {"messages": [response]}
+
+
+# ---------------------------
+# 5. CONTROL LOGIC
+# ---------------------------
+def should_continue(state: AgentState): 
+    # Look at the last message
+    messages = state["messages"]
+    last_message = messages[-1]
+    # If the AI requested a tool (AIMessage.tool_calls not empty) → continue to tools
+    if last_message.tool_calls: 
         return "continue"
+    # Otherwise, the AI produced a final answer → end the graph
     return "end"
+    
 
-# 5. Graph definition
-graph = StateGraph(AgentState)
-graph.add_node("our_agent", model_call)
-graph.add_node("tools", ToolNode(tools=tools))
-graph.set_entry_point("our_agent")
+# ---------------------------
+# 6. GRAPH DEFINITION
+# ---------------------------
+graph = StateGraph(AgentState)  # Create a graph whose state type is AgentState
 
-graph.add_conditional_edges("our_agent", should_continue, {
-    "continue": "tools",
-    "end": END,
-})
+# Add nodes to the graph
+graph.add_node("our_agent", model_call)  # Node where the LLM runs
+
+tool_node = ToolNode(tools=tools)        # A prebuilt node that runs tools when requested
+graph.add_node("tools", tool_node)
+
+graph.set_entry_point("our_agent")       # Start execution in the LLM node
+
+# Conditional edges: after the agent runs, decide whether to END or go to tools
+graph.add_conditional_edges(
+    "our_agent",
+    should_continue,    # function that decides where to go next
+    {
+        "continue": "tools",  # go to tools node
+        "end": END,           # stop the graph
+    },
+)
+
+# After tools finish, return to the agent so it can process tool outputs
 graph.add_edge("tools", "our_agent")
 
+# Compile the graph into an executable app
 app = graph.compile()
 
-# 6. Draw Graph
-png_bytes = app.get_graph().draw_mermaid_png(output_file_path="final_graph.png")
-display(Image(data=png_bytes))
 
-# 7. Run Stream
+# ---------------------------
+# 7. HELPER: Pretty print stream
+# ---------------------------
 def print_stream(stream):
-    for step in stream:
-        last_msg = step["messages"][-1]
-        if hasattr(last_msg, "pretty_print"):
-            last_msg.pretty_print()
+    for s in stream:
+        message = s["messages"][-1]  # Look at the latest message
+        if isinstance(message, tuple):
+            print(message)
         else:
-            print(last_msg)
+            message.pretty_print()   # Nicely formatted print of AI/Human/Tool messages
 
-inputs = {"messages": [HumanMessage(content="Add 40 + 12 and then multiply the result by 6. Also tell me a joke please.")]}
+
+# ---------------------------
+# 8. RUN EXAMPLE
+# ---------------------------
+inputs = {
+    "messages": [
+        ("user", "Add 40 + 12 and then multiply the result by 6. Also tell me a joke please.")
+    ]
+}
+
+# Stream the execution step by step
 print_stream(app.stream(inputs, stream_mode="values"))
