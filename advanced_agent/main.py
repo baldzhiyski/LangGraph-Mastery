@@ -5,7 +5,7 @@ from langgraph.graph.message import add_messages
 from langchain.chat_models import init_chat_model
 from typing_extensions import TypedDict
 from pydantic import BaseModel,Field
-from web_operations import serp_search
+from web_operations import serp_search,reddit_search_api
 
 load_dotenv()
 
@@ -31,7 +31,6 @@ def google_search(state: State):
     print(f"Searching Google for {user_question}")
 
     google_results = serp_search(user_question,engine="google")
-    print(google_results)
 
     # The return should match the field in the state and will be updated
     return {"google_results": google_results}
@@ -42,7 +41,7 @@ def bing_search(state: State):
     print(f"Searching Bing for {user_question}")
 
     bing_results = serp_search(user_question,engine="bing")
-    print(bing_results)
+
     return {"bing_results": bing_results}
 
 def reddit_search(state: State):
@@ -50,7 +49,9 @@ def reddit_search(state: State):
 
     print(f"Searching Reddit for {user_question}")
 
-    reddit_results = []
+    reddit_results = reddit_search_api(user_question)
+ 
+
     return {"reddit_results": reddit_results}
 
 def analyze_reddit_posts(state: State):
